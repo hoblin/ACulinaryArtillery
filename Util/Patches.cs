@@ -969,6 +969,25 @@ namespace ACulinaryArtillery
         [HarmonyPatch("Resolve")]
         public static void Resolve(object instance, IWorldAccessor world, string sourceForErrorLogging) => throw new NotImplementedException("Method replaces stub");
 
+        private sealed record IgnoredAttributes(string[] Vanilla, string[] All);
+
+        private static IgnoredAttributes ignoredAttributes = new([], []);
+
+        public static string[] IgnoredStackAttributes
+        {
+            get
+            {
+                IgnoredAttributes current = ignoredAttributes;
+                if (current.Vanilla != GlobalConstants.IgnoredStackAttributes)
+                {
+                    string[] vanilla = GlobalConstants.IgnoredStackAttributes;
+                    ignoredAttributes = current = new(vanilla, [.. vanilla, "madeWith", "expandedSats", "timeFrozen"]);
+                }
+
+                return current.All;
+            }
+        }
+
         [HarmonyPrefix]
         [HarmonyPatch("GetMatchingStack")]
         public static bool displayFix(ItemStack inputStack, ref CookingRecipeStack? __result, CookingRecipeIngredient __instance)
@@ -979,17 +998,9 @@ namespace ACulinaryArtillery
                 return false;
             }
 
-            string[] ignoredStackAttributes = [.. GlobalConstants.IgnoredStackAttributes, "madeWith", "expandedSats", "timeFrozen"];
             for (int i = 0; i < __instance.ValidStacks.Length; i++)
             {
-                bool isWildCard = __instance.ValidStacks[i].Code.Path.Contains("*");
-                bool found =
-                    (isWildCard && inputStack.Collectible.WildCardMatch(__instance.ValidStacks[i].Code))
-                    || (!isWildCard && inputStack.Equals(__instance.world, __instance.ValidStacks[i].ResolvedItemStack, ignoredStackAttributes))
-                    || (__instance.ValidStacks[i].CookedStack?.ResolvedItemStack is ItemStack cookedStack && inputStack.Equals(__instance.world, cookedStack, ignoredStackAttributes))
-                ;
-
-                if (found)
+                if (Matches(__instance, __instance.ValidStacks[i], inputStack))
                 {
                     __result = __instance.ValidStacks[i];
                     return false;
@@ -998,6 +1009,16 @@ namespace ACulinaryArtillery
 
             __result = null;
             return false;
+        }
+
+        public static bool Matches(CookingRecipeIngredient ingredient, CookingRecipeStack validStack, ItemStack inputStack)
+        {
+            bool isWildCard = validStack.Code.Path.Contains('*');
+            return
+                (isWildCard && inputStack.Collectible.WildCardMatch(validStack.Code))
+                || (!isWildCard && inputStack.Equals(ingredient.world, validStack.ResolvedItemStack, IgnoredStackAttributes))
+                || (validStack.CookedStack?.ResolvedItemStack is ItemStack cookedStack && inputStack.Equals(ingredient.world, cookedStack, IgnoredStackAttributes))
+            ;
         }
     }
 
@@ -1193,8 +1214,6 @@ namespace ACulinaryArtillery
             int insertIndex = __result.Count;
             if (firstPie != null) insertIndex = __result.IndexOf(firstPie);
 
-            var allstacks = ObjectCacheUtil.TryGet<ItemStack[]>(___capi, "handbookallstacks");
-
             foreach (var recipe in ___capi.GetMixingRecipes())
             {
                 if (___capi.IsShuttingDown) break;
@@ -1211,16 +1230,16 @@ namespace ACulinaryArtillery
                     insertIndex++;
                 }
             }
+        }
+    }
 
-            foreach (var recipe in ___capi.GetCookingRecipes())
-            {
-                HandbookInfoExtensions.CreateCachedMealRecipeStacks(___capi, recipe);
-            }
-
-            foreach (var recipe in BlockPie.GetHandbookRecipes(___capi, allstacks))
-            {
-                HandbookInfoExtensions.CreateCachedMealRecipeStacks(___capi, recipe);
-            }
+    [HarmonyPatch(typeof(ModSystemSurvivalHandbook), "CreateCachedMealRecipeStacks")]
+    public static class HandbookMealRecipeStacksPatch
+    {
+        public static bool Prefix(ICoreClientAPI ___capi, CookingRecipe recipe)
+        {
+            HandbookInfoExtensions.CreateCachedMealRecipeStacks(___capi, recipe);
+            return false;
         }
     }
 

@@ -5,6 +5,7 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 
 using System;
+using System.Runtime.CompilerServices;
 using Vintagestory.API.Util;
 using Vintagestory.API;
 using Vintagestory.GameContent;
@@ -173,8 +174,22 @@ namespace ACulinaryArtillery.Util
         public static ExpandedInPieProperties? ReadFrom(CollectibleObject obj, out string? errMessage)
         {
             errMessage = null;
+            if (obj == null) return null;
 
-            if (obj?.Attributes?["inPieProperties"]?.AsObject<ExpandedInPieProperties>(null, obj.Code.Domain) is not ExpandedInPieProperties props)
+            ParsedPieProperties parsed = parsedByCollectible.GetValue(obj, collectible => new(Parse(collectible, out string? error), error));
+            errMessage = parsed.Error;
+            return parsed.Properties;
+        }
+
+        private sealed record ParsedPieProperties(ExpandedInPieProperties? Properties, string? Error);
+
+        private static readonly ConditionalWeakTable<CollectibleObject, ParsedPieProperties> parsedByCollectible = new();
+
+        private static ExpandedInPieProperties? Parse(CollectibleObject obj, out string? errMessage)
+        {
+            errMessage = null;
+
+            if (obj.Attributes?["inPieProperties"]?.AsObject<ExpandedInPieProperties>(null, obj.Code.Domain) is not ExpandedInPieProperties props)
             {
                 return null;
             }
