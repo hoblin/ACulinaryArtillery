@@ -1,5 +1,7 @@
-﻿using System.Collections.Generic;
+﻿using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
@@ -252,40 +254,103 @@ namespace ACulinaryArtillery.Util
 
         public static Dictionary<CookingRecipeIngredient, HashSet<ItemStack?>>? CreateCachedMealRecipeStacks(ICoreClientAPI capi, CookingRecipe recipe)
         {
+            if (recipe.Ingredients == null || StackIndex(capi) is not HandbookStackIndex index) return null;
+
+            return ObjectCacheUtil.GetOrCreate(capi, "valstacksbying-" + recipe.Code, () => BuildMealRecipeStacks(capi, recipe, index));
+        }
+
+        private static readonly ConditionalWeakTable<ICoreClientAPI, HandbookStackIndex> stackIndexes = new();
+
+        private static HandbookStackIndex? StackIndex(ICoreClientAPI capi)
+        {
+            if (stackIndexes.TryGetValue(capi, out HandbookStackIndex? index)) return index;
+
             ItemStack[]? allstacks = ObjectCacheUtil.TryGet<ItemStack[]>(capi, "handbookallstacks");
             if (allstacks == null || allstacks.Length == 0) return null;
 
-            return ObjectCacheUtil.GetOrCreate(capi, "valstacksbying-" + recipe.Code, () =>
+            return stackIndexes.GetValue(capi, _ => new HandbookStackIndex(allstacks));
+        }
+
+        private static Dictionary<CookingRecipeIngredient, HashSet<ItemStack?>> BuildMealRecipeStacks(ICoreClientAPI capi, CookingRecipe recipe, HandbookStackIndex index)
+        {
+            Dictionary<CookingRecipeIngredient, HashSet<ItemStack?>> valStacksByIng = [];
+
+            foreach (var ingredient in recipe.Ingredients!)
             {
-                Dictionary<CookingRecipeIngredient, HashSet<ItemStack?>>? valStacksByIng = [];
+                CookingRecipeIngredientPatcher.Resolve(ingredient, capi.World, "handbook meal recipes");
+                HashSet<ItemStack?> ingredientStacks = [.. index.IngredientStacks(ingredient)];
 
-                foreach (var ingredient in recipe.Ingredients!)
+                if (ingredient.MinQuantity <= 0) ingredientStacks.Add(null);
+
+                valStacksByIng.Add(ingredient.Clone(), ingredientStacks);
+            }
+
+            return valStacksByIng;
+        }
+
+        private sealed class HandbookStackIndex
+        {
+            public readonly ItemStack[] Stacks;
+            private readonly ILookup<(EnumItemClass, int), int> stacksByCollectible;
+            private readonly ConcurrentDictionary<AssetLocation, int[]> stacksByWildcard = new();
+
+            public HandbookStackIndex(ItemStack[] stacks)
+            {
+                Stacks = stacks;
+                stacksByCollectible = Enumerable.Range(0, stacks.Length).ToLookup(i => (stacks[i].Class, stacks[i].Id));
+            }
+
+            public List<ItemStack> IngredientStacks(CookingRecipeIngredient ingredient)
+            {
+                Dictionary<int, CookingRecipeStack?> firstMatch = [];
+                foreach (CookingRecipeStack validStack in ingredient.ValidStacks)
                 {
-                    HashSet<ItemStack?> ingredientStacks = [];
-
-                    CookingRecipeIngredientPatcher.Resolve(ingredient, capi.World, "handbook meal recipes");
-                    foreach (var astack in allstacks)
+                    foreach (int i in Candidates(validStack))
                     {
-                        if (ingredient.GetMatchingStack(astack) is not CookingRecipeStack vstack) continue;
-
-                        ItemStack stack = astack.Clone();
-                        stack.StackSize = vstack.StackSize;
-
-                        if (BlockLiquidContainerBase.GetContainableProps(stack) is WaterTightContainableProps props)
-                        {
-                            stack.StackSize *= (int)(props.ItemsPerLitre * ingredient.PortionSizeLitres);
-                        }
-
-                        ingredientStacks.Add(stack);
+                        if (firstMatch.GetValueOrDefault(i) == null && CookingRecipeIngredientPatcher.Matches(ingredient, validStack, Stacks[i])) firstMatch[i] = validStack;
+                        else firstMatch.TryAdd(i, null);
                     }
-
-                    if (ingredient.MinQuantity <= 0) ingredientStacks.Add(null);
-
-                    valStacksByIng.Add(ingredient.Clone(), ingredientStacks);
                 }
 
-                return valStacksByIng;
-            });
+                List<ItemStack> ingredientStacks = [];
+                foreach (int i in firstMatch.Keys.Order())
+                {
+                    if ((firstMatch[i] ?? ingredient.GetMatchingStack(Stacks[i])) is not CookingRecipeStack matchedStack) continue;
+
+                    ItemStack stack = Stacks[i].Clone();
+                    stack.StackSize = matchedStack.StackSize;
+
+                    if (BlockLiquidContainerBase.GetContainableProps(stack) is WaterTightContainableProps props)
+                    {
+                        stack.StackSize *= (int)(props.ItemsPerLitre * ingredient.PortionSizeLitres);
+                    }
+
+                    ingredientStacks.Add(stack);
+                }
+
+                return ingredientStacks;
+            }
+
+            private IEnumerable<int> Candidates(CookingRecipeStack validStack)
+            {
+                IEnumerable<int> candidates = validStack.Code.Path.Contains('*')
+                    ? stacksByWildcard.GetOrAdd(validStack.Code, WildcardMatches)
+                    : Of(validStack.ResolvedItemStack);
+
+                return validStack.CookedStack?.ResolvedItemStack is ItemStack cookedStack ? candidates.Concat(Of(cookedStack)) : candidates;
+            }
+
+            private IEnumerable<int> Of(ItemStack? stack)
+            {
+                return stack != null ? stacksByCollectible[(stack.Class, stack.Id)] : [];
+            }
+
+            private int[] WildcardMatches(AssetLocation wildcard)
+            {
+                return [.. stacksByCollectible
+                    .Where(indexes => Stacks[indexes.First()].Collectible.WildCardMatch(wildcard))
+                    .SelectMany(indexes => indexes)];
+            }
         }
     }
 }
