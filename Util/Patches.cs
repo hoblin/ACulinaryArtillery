@@ -707,7 +707,7 @@ namespace ACulinaryArtillery
                         // Get the list of codes for this ingredient that can be filtered out
                         string[] ingredientCodes = ExpandedInPieProperties.ReadFrom(stack)!.MixingCodes.Where(code => code != recipeCode)?.ToArray() ?? [];
                         // Remove all the other ingredients that share any codes
-                        filteredValidStacks = filteredValidStacks.Where(stack => ExpandedInPieProperties.ReadFrom(stack)!.MixingCodes.Intersect(ingredientCodes).Count() == 0).ToList();
+                        filteredValidStacks = filteredValidStacks.Where(stack => !ExpandedInPieProperties.ReadFrom(stack)!.MixingCodes.Any(ingredientCodes.Contains)).ToList();
                         pie.Add(stack);
                     }
                     else
@@ -721,13 +721,23 @@ namespace ACulinaryArtillery
             }
 
             Dictionary<CookingRecipeIngredient, List<ItemStack?>> valIngStacks = [];
-            foreach (var entry in validStacksByIngredient) valIngStacks.Add(entry.Key.Clone(), [.. entry.Value]);
+            foreach ((CookingRecipeIngredient ingredient, HashSet<ItemStack?> stacks) in validStacksByIngredient)
+            {
+                CookingRecipeIngredient portions = new()
+                {
+                    Code = ingredient.Code,
+                    MinQuantity = ingredient.MinQuantity,
+                    MaxQuantity = ingredient.MaxQuantity,
+                    ValidStacks = ingredient.ValidStacks
+                };
+                valIngStacks.Add(portions, [.. stacks]);
+            }
             valIngStacks = valIngStacks.OrderBy(x => api.World.Rand.Next()).ToDictionary(item => item.Key, item => item.Value);
             CookingRecipeIngredient? requestedIngredient = null;
             if (ingredientStack != null)
             {
                 List<CookingRecipeIngredient> validIngredients = [.. recipe.Ingredients.Where(ingredient => ingredient.Matches(ingredientStack))];
-                requestedIngredient = validIngredients[api.World.Rand.Next(validIngredients.Count)].Clone();
+                requestedIngredient = validIngredients[api.World.Rand.Next(validIngredients.Count)];
             }
 
             List<ItemStack?> randomPie = [];
@@ -1028,14 +1038,14 @@ namespace ACulinaryArtillery
         public static void Postfix(ref bool __result, ICoreClientAPI capi, ItemStack[] allStacks, ActionConsumable<string> openDetailPageFor, ItemStack stack, List<RichTextComponentBase> components, float marginTop, List<ItemStack> containers, List<ItemStack> fuels, List<ItemStack> molds, bool haveText)
         {
             int pieRecipeCount = 0;
-            List<RichTextComponentBase> excessivePieRecipeComponents = [];
+            HashSet<RichTextComponentBase> excessivePieRecipeComponents = [];
 
             // Toppings need to have the default crust type because they have only one shape.
             foreach (MealstackTextComponent? comp in components.OfType<MealstackTextComponent>())
             {
                 if (comp == null) continue;
 
-                ItemStack? mealBlock = Traverse.Create(comp).Field("dummySlot").GetValue<DummySlot>()?.Itemstack;
+                ItemStack? mealBlock = HandbookInfoExtensions.MealstackDummySlot(comp)?.Itemstack;
                 if (mealBlock?.Block is not BlockPie pieBlock) continue;
 
                 ItemStack? topCrustStack = pieBlock.GetContents(capi.World, mealBlock).ElementAtOrDefault(5);
@@ -1054,10 +1064,7 @@ namespace ACulinaryArtillery
             }
 
             // Rendering too many new meals in one frame overburdens MealMeshCache.
-            foreach (RichTextComponentBase comp in excessivePieRecipeComponents)
-            {
-                components.Remove(comp);
-            }
+            components.RemoveAll(excessivePieRecipeComponents.Contains);
 
             var newComponents = HandbookInfoExtensions.ACAHandbookIngredientForComponents(capi, allStacks, openDetailPageFor, stack);
             if (newComponents.Count == 0) return;
@@ -1097,10 +1104,11 @@ namespace ACulinaryArtillery
             ObjectCacheUtil.GetOrCreate(capi, "ACAhandbooksimmerStacks", () =>
             {
                 List<ItemStack> validStacks = [];
+                int maxFuelTemp = HandbookInfoExtensions.MaxFuelTemperature(fuels);
 
                 foreach (var val in allStacks)
                 {
-                    if (HandbookInfoExtensions.getCanSimmer(fuels, val) && !validStacks.Any(s => s.Equals(capi.World, val, GlobalConstants.IgnoredStackAttributes)))
+                    if (HandbookInfoExtensions.getCanSimmer(maxFuelTemp, val) && !validStacks.Any(s => s.Equals(capi.World, val, GlobalConstants.IgnoredStackAttributes)))
                     {
                         validStacks.Add(val);
                     }
@@ -1192,7 +1200,7 @@ namespace ACulinaryArtillery
             // Toppings need to have the default crust type because they have only one shape.
             foreach (MealstackTextComponent? comp in components.OfType<MealstackTextComponent>())
             {
-                ItemStack? mealBlock = Traverse.Create(comp).Field("dummySlot").GetValue<DummySlot>()?.Itemstack;
+                ItemStack? mealBlock = HandbookInfoExtensions.MealstackDummySlot(comp)?.Itemstack;
                 if (mealBlock?.Block is not BlockPie pieBlock) continue;
 
                 ItemStack? topCrustStack = pieBlock.GetContents(capi.World, mealBlock).ElementAtOrDefault(5);
@@ -1239,6 +1247,22 @@ namespace ACulinaryArtillery
         public static bool Prefix(ICoreClientAPI ___capi, CookingRecipe recipe)
         {
             HandbookInfoExtensions.CreateCachedMealRecipeStacks(___capi, recipe);
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(GuiHandbookMealRecipePage), "getIngredientStacks")]
+    public static class GuiHandbookMealRecipePageIngredientStacksPatch
+    {
+        public static bool Prefix(ref List<ItemStack> __result, Dictionary<string, List<ItemStack>> ___cachedIngredientStacks, ICoreClientAPI capi, CookingRecipeIngredient ingredient)
+        {
+            if (!___cachedIngredientStacks.TryGetValue(ingredient.Code, out List<ItemStack>? cachedStacks))
+            {
+                if (HandbookInfoExtensions.IngredientStacks(capi, ingredient) is not List<ItemStack> ingredientStacks) return true;
+                ___cachedIngredientStacks.Add(ingredient.Code, cachedStacks = ingredientStacks);
+            }
+
+            __result = [.. cachedStacks.Select(stack => stack.Clone())];
             return false;
         }
     }

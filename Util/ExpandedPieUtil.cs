@@ -5,6 +5,7 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 
 using System;
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Vintagestory.API.Util;
 using Vintagestory.API;
@@ -288,7 +289,7 @@ namespace ACulinaryArtillery.Util
 
     public class ExpandedPieUtil
     {
-        protected static HashSet<string> reportedMissingPieProps = [];
+        protected static ConcurrentDictionary<string, bool> reportedMissingPieProps = new();
 
         /// <summary>
         /// Report that an object in a pie is missing its InPieProperties.
@@ -299,12 +300,10 @@ namespace ACulinaryArtillery.Util
         /// <returns>true if the element is added to the HashSet object; false if the element is already present.</returns>
         public static bool ReportMissingPieProps(ILogger logger, string code)
         {
-            if (!reportedMissingPieProps.Contains(code))
-            {
-                logger.Error($"{code} is already in a pie, but it no longer has inPieProperties. It's still edible, but some things will break.");
-            }
+            if (!reportedMissingPieProps.TryAdd(code, true)) return false;
 
-            return reportedMissingPieProps.Add(code);
+            logger.Error($"{code} is already in a pie, but it no longer has inPieProperties. It's still edible, but some things will break.");
+            return true;
         }
 
         public static bool BEPieCanAddIngredient(BlockEntityPie bep, ItemStack stack)
