@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using Vintagestory.API;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
@@ -51,6 +52,13 @@ namespace ACulinaryArtillery
         public int[] temperatureRange = [-5, 40];
 
         public static SapProperties? ReadFrom(CollectibleObject obj)
+        {
+            return parsedByCollectible.GetValue(obj, Parse);
+        }
+
+        private static readonly ConditionalWeakTable<CollectibleObject, SapProperties?> parsedByCollectible = new();
+
+        private static SapProperties? Parse(CollectibleObject obj)
         {
             if (obj.Attributes?["sapProperties"]?.AsObject<SapProperties>() is not SapProperties xylem) return null;
 
@@ -106,22 +114,6 @@ namespace ACulinaryArtillery
             base.Initialize(api);
 
             RegisterGameTickListener(SapDrip, 5000);
-            if ((Block as BlockSpile)?.FindTree(Api.World.BlockAccessor, Pos.AddCopy(Facing())) is Stack<BlockPos> tree)
-            {
-                // CachedSpiledTreeBlocks.AddRange(tree);
-                // CachedTreesBySpilePos.TryAdd(Pos, tree);
-                // CachedSpiledTreeBlocks.AddRange(tree);
-                // (int cachedSpileCount, Stack<BlockPos>? cachedTree) = CachedTreesBySpilePos.GetValueOrDefault(Pos, (0, []));
-
-                // if (cachedSpileCount > 0)
-                // {
-                //     CachedTreesBySpilePos.Add(Pos, (cachedSpileCount + 1, tree));
-                // }
-                // else
-                // {
-                //     CachedTreesBySpilePos.TryAdd(Pos, (1, tree));
-                // }
-            }
 
             roomreg = api.ModLoader.GetModSystem<RoomRegistry>();
             if (Api.Side == EnumAppSide.Client) RegisterGameTickListener(dripParticleAndSound, 1000);

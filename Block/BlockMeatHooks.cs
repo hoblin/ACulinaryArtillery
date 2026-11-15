@@ -21,6 +21,20 @@ namespace ACulinaryArtillery
             // Todo: Add interaction help
         }
 
+        public override void OnUnloaded(ICoreAPI api)
+        {
+            base.OnUnloaded(api);
+
+            if (api is not ICoreClientAPI capi) return;
+
+            if (capi.ObjectCache.TryGetValue("aculinaryartillery:meathook-meshes", out var obj))
+            {
+                foreach (var val in obj as Dictionary<string, MultiTextureMeshRef> ?? []) val.Value.Dispose();
+
+                capi.ObjectCache.Remove("aculinaryartillery:meathook-meshes");
+            }
+        }
+
         public override void OnBeforeRender(ICoreClientAPI capi, ItemStack itemstack, EnumItemRenderTarget target, ref ItemRenderInfo renderinfo)
         {
             var meshRefs = ObjectCacheUtil.GetOrCreate(capi, "aculinaryartillery:meathook-meshes", () => new Dictionary<string, MultiTextureMeshRef>());

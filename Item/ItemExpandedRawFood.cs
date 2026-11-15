@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -240,12 +241,21 @@ namespace ACulinaryArtillery
             if (foodCat >= 1 && foodCat <= 5) satHolder[foodCat] += ingProps.Satiety * mult;
         }
 
+        private static readonly ConcurrentDictionary<(string Locale, string Ingredient), string?> ingredientNames = new();
+
+        private static string? IngredientName(string ingredient)
+        {
+            return ingredientNames.GetOrAdd((Lang.CurrentLocale, ingredient), key =>
+            {
+                string path = new AssetLocation(key.Ingredient).Path;
+                return Lang.GetIfExists("recipeingredient-block-" + path) ?? Lang.GetIfExists("recipeingredient-item-" + path);
+            });
+        }
+
         public override void GetHeldItemInfo(ItemSlot inSlot, StringBuilder dsc, IWorldAccessor world, bool withDebugInfo)
         {
             string[] ings = [.. (inSlot.Itemstack.Attributes["madeWith"] as StringArrayAttribute)?.value
-                                .Select(ing => new AssetLocation(ing))?
-                                .Select(ing => Lang.GetIfExists("recipeingredient-block-" + ing.Path) ??
-                                               Lang.GetIfExists("recipeingredient-item-" + ing.Path))?
+                                .Select(IngredientName)
                                 .Where(ing => ing != null)
                                 .Distinct() ?? []];
 
@@ -263,16 +273,30 @@ namespace ACulinaryArtillery
             string[]? ings = (itemstack.Attributes?["madeWith"] as StringArrayAttribute)?.value;
             if (ings == null || ings.Length <= 0) return;
 
-            Dictionary<string, MultiTextureMeshRef> meshrefs = ObjectCacheUtil.GetOrCreate(capi, "expandedFoodGuiMeshRefs", () => new Dictionary<string, MultiTextureMeshRef>());
+            Dictionary<string, MultiTextureMeshRef?> meshrefs = ObjectCacheUtil.GetOrCreate(capi, "expandedFoodGuiMeshRefs", () => new Dictionary<string, MultiTextureMeshRef?>());
 
             string key = Code.ToShortString() + string.Join("|", ings);
             if (!meshrefs.TryGetValue(key, out var meshref))
             {
-                if (GenMesh(capi.ItemTextureAtlas, ings, new Vec3f(0, 0, 0)) is not MeshData mesh) return;
-                meshrefs[key] = meshref = capi.Render.UploadMultiTextureMesh(mesh);
+                MeshData? mesh = GenMesh(capi.ItemTextureAtlas, ings, new Vec3f(0, 0, 0));
+                meshrefs[key] = meshref = mesh == null ? null : capi.Render.UploadMultiTextureMesh(mesh);
             }
 
             if (meshref != null) renderinfo.ModelRef = meshref;
+        }
+
+        public override void OnUnloaded(ICoreAPI api)
+        {
+            base.OnUnloaded(api);
+
+            if (api is not ICoreClientAPI capi) return;
+
+            if (capi.ObjectCache.TryGetValue("expandedFoodGuiMeshRefs", out var obj))
+            {
+                foreach (var val in obj as Dictionary<string, MultiTextureMeshRef?> ?? []) val.Value?.Dispose();
+
+                capi.ObjectCache.Remove("expandedFoodGuiMeshRefs");
+            }
         }
 
         public virtual MeshData? GenMesh(ITextureAtlasAPI targetAtlas, string[] ings, Vec3f? rot = null, ITesselatorAPI? tesselator = null)
@@ -479,29 +503,6 @@ namespace ACulinaryArtillery
             List<FoodNutritionProperties> foodProps = [];
 
             CollectibleObject obj = contentStack.Collectible;
-            CombustibleProperties? cprops = obj.GetCombustibleProperties(world, contentStack, null);
-            WaterTightContainableProps? liquidProps = BlockLiquidContainerBase.GetContainableProps(contentStack);
-            FoodNutritionProperties? nutriProps;
-
-            nutriProps = obj.Attributes?["nutritionPropsWhenInMeal"].AsObject<FoodNutritionProperties>();
-            nutriProps ??= cprops?.SmeltedStack?.ResolvedItemstack?.Collectible.GetNutritionProperties(world, cprops.SmeltedStack.ResolvedItemstack, forEntity);
-            nutriProps ??= liquidProps?.NutritionPropsPerLitreWhenInMeal;
-
-            if (liquidProps != null && nutriProps == null)
-            {
-                nutriProps = liquidProps.NutritionPropsPerLitre?.Clone();
-                if (nutriProps != null)
-                {
-                    nutriProps.Satiety *= 1.3f;
-                    float litre = contentStack.StackSize / liquidProps.ItemsPerLitre;
-                    nutriProps.Health *= litre;
-                    nutriProps.Satiety *= litre;
-                    nutriProps.Intoxication *= litre;
-                    nutriProps.Psychedelic *= litre;
-                }
-            }
-
-            nutriProps ??= obj.GetNutritionProperties(world, contentStack, forEntity);
 
             float satLossMul = 1.0f;
             float healthLoss = 1.0f;
@@ -513,8 +514,8 @@ namespace ACulinaryArtillery
             {
                 nutriStack.StackSize = (int)(BlockLiquidContainerBase.GetContainableProps(nutriStack)?.ItemsPerLitre ?? 1);
                 string recipeCode = inSlot.Itemstack!.Attributes.GetString("recipeCode");
-                var cookingIngreds = world.Api.GetCookingRecipe(recipeCode)?.Ingredients?.Select(ingred => ingred.Clone()).ToList();
-                cookingIngreds ??= world.Api.GetMixingRecipes().Find(rec => rec.Code == recipeCode)?.Ingredients?.Select(ingred => ingred.Clone()).ToList();
+                var cookingIngreds = world.Api.GetCookingRecipe(recipeCode)?.Ingredients;
+                cookingIngreds ??= world.Api.GetMixingRecipes().Find(rec => rec.Code == recipeCode)?.Ingredients;
                 if (cookingIngreds?.FirstOrDefault(ing => ing.Matches(nutriStack)) is CookingRecipeIngredient ingred)
                 {
                     mul = ingred.GetMatchingStack(nutriStack)?.StackSize ?? 1;
@@ -525,7 +526,7 @@ namespace ACulinaryArtillery
 
             if (BlockMeal.GetIngredientStackNutritionProperties(world, nutriStack, forEntity) is not FoodNutritionProperties stackProps) return [];
 
-            nutriProps = stackProps.Clone();
+            FoodNutritionProperties? nutriProps = stackProps.Clone();
 
             if (obj is ItemExpandedRawFood && (contentStack.Attributes["expandedSats"] as FloatArrayAttribute)?.value?.Length == 6)
             {

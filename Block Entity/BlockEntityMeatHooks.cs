@@ -40,6 +40,8 @@ namespace ACulinaryArtillery
                 rack.Wood = Wood;
                 rack.Metal = Metal;
             }
+
+            GenMesh();
         }
 
         public void GenMesh()
@@ -80,7 +82,7 @@ namespace ACulinaryArtillery
 
         public override bool OnTesselation(ITerrainMeshPool mesher, ITesselatorAPI tessThreadTesselator)
         {
-            GenMesh();
+            if (mesh == null) GenMesh();
             mesher.AddMeshData(mesh);
 
             if (tfMatrices == null)
@@ -223,7 +225,6 @@ namespace ACulinaryArtillery
             if (inventory[index].Empty && slot.TryPutInto(Api.World, inventory[index]) > 0)
             {
                 updateMesh(index);
-                GenMesh();
                 MarkDirty(true);
                 return true;
             }
@@ -450,10 +451,11 @@ namespace ACulinaryArtillery
         {
             base.FromTreeAttributes(tree, worldForResolving);
 
+            string? wood = Wood, metal = Metal;
             Wood = tree.GetString("wood");
             Metal = tree.GetString("metal");
 
-            GenMesh();
+            if (mesh == null || wood != Wood || metal != Metal) GenMesh();
 
             RedrawAfterReceivingTreeAttributes(worldForResolving);
         }

@@ -632,6 +632,7 @@ namespace ACulinaryArtillery
                 return false;
             }
 
+            if (api is ICoreClientAPI capi) cachedValidStacksByIngredient ??= HandbookInfoExtensions.CreateCachedMealRecipeStacks(capi, recipe);
             Dictionary<CookingRecipeIngredient, HashSet<ItemStack?>>? validStacksByIngredient = cachedValidStacksByIngredient;
 
             if (validStacksByIngredient == null)
@@ -707,7 +708,7 @@ namespace ACulinaryArtillery
                         // Get the list of codes for this ingredient that can be filtered out
                         string[] ingredientCodes = ExpandedInPieProperties.ReadFrom(stack)!.MixingCodes.Where(code => code != recipeCode)?.ToArray() ?? [];
                         // Remove all the other ingredients that share any codes
-                        filteredValidStacks = filteredValidStacks.Where(stack => ExpandedInPieProperties.ReadFrom(stack)!.MixingCodes.Intersect(ingredientCodes).Count() == 0).ToList();
+                        filteredValidStacks = filteredValidStacks.Where(stack => !ExpandedInPieProperties.ReadFrom(stack)!.MixingCodes.Any(ingredientCodes.Contains)).ToList();
                         pie.Add(stack);
                     }
                     else
@@ -721,13 +722,23 @@ namespace ACulinaryArtillery
             }
 
             Dictionary<CookingRecipeIngredient, List<ItemStack?>> valIngStacks = [];
-            foreach (var entry in validStacksByIngredient) valIngStacks.Add(entry.Key.Clone(), [.. entry.Value]);
+            foreach ((CookingRecipeIngredient ingredient, HashSet<ItemStack?> stacks) in validStacksByIngredient)
+            {
+                CookingRecipeIngredient portions = new()
+                {
+                    Code = ingredient.Code,
+                    MinQuantity = ingredient.MinQuantity,
+                    MaxQuantity = ingredient.MaxQuantity,
+                    ValidStacks = ingredient.ValidStacks
+                };
+                valIngStacks.Add(portions, [.. stacks]);
+            }
             valIngStacks = valIngStacks.OrderBy(x => api.World.Rand.Next()).ToDictionary(item => item.Key, item => item.Value);
             CookingRecipeIngredient? requestedIngredient = null;
             if (ingredientStack != null)
             {
                 List<CookingRecipeIngredient> validIngredients = [.. recipe.Ingredients.Where(ingredient => ingredient.Matches(ingredientStack))];
-                requestedIngredient = validIngredients[api.World.Rand.Next(validIngredients.Count)].Clone();
+                requestedIngredient = validIngredients[api.World.Rand.Next(validIngredients.Count)];
             }
 
             List<ItemStack?> randomPie = [];
@@ -969,6 +980,25 @@ namespace ACulinaryArtillery
         [HarmonyPatch("Resolve")]
         public static void Resolve(object instance, IWorldAccessor world, string sourceForErrorLogging) => throw new NotImplementedException("Method replaces stub");
 
+        private sealed record IgnoredAttributes(string[] Vanilla, string[] All);
+
+        private static IgnoredAttributes ignoredAttributes = new([], []);
+
+        public static string[] IgnoredStackAttributes
+        {
+            get
+            {
+                IgnoredAttributes current = ignoredAttributes;
+                if (current.Vanilla != GlobalConstants.IgnoredStackAttributes)
+                {
+                    string[] vanilla = GlobalConstants.IgnoredStackAttributes;
+                    ignoredAttributes = current = new(vanilla, [.. vanilla, "madeWith", "expandedSats", "timeFrozen"]);
+                }
+
+                return current.All;
+            }
+        }
+
         [HarmonyPrefix]
         [HarmonyPatch("GetMatchingStack")]
         public static bool displayFix(ItemStack inputStack, ref CookingRecipeStack? __result, CookingRecipeIngredient __instance)
@@ -979,17 +1009,9 @@ namespace ACulinaryArtillery
                 return false;
             }
 
-            string[] ignoredStackAttributes = [.. GlobalConstants.IgnoredStackAttributes, "madeWith", "expandedSats", "timeFrozen"];
             for (int i = 0; i < __instance.ValidStacks.Length; i++)
             {
-                bool isWildCard = __instance.ValidStacks[i].Code.Path.Contains("*");
-                bool found =
-                    (isWildCard && inputStack.Collectible.WildCardMatch(__instance.ValidStacks[i].Code))
-                    || (!isWildCard && inputStack.Equals(__instance.world, __instance.ValidStacks[i].ResolvedItemStack, ignoredStackAttributes))
-                    || (__instance.ValidStacks[i].CookedStack?.ResolvedItemStack is ItemStack cookedStack && inputStack.Equals(__instance.world, cookedStack, ignoredStackAttributes))
-                ;
-
-                if (found)
+                if (Matches(__instance, __instance.ValidStacks[i], inputStack))
                 {
                     __result = __instance.ValidStacks[i];
                     return false;
@@ -999,6 +1021,16 @@ namespace ACulinaryArtillery
             __result = null;
             return false;
         }
+
+        public static bool Matches(CookingRecipeIngredient ingredient, CookingRecipeStack validStack, ItemStack inputStack)
+        {
+            bool isWildCard = validStack.Code.Path.Contains('*');
+            return
+                (isWildCard && inputStack.Collectible.WildCardMatch(validStack.Code))
+                || (!isWildCard && inputStack.Equals(ingredient.world, validStack.ResolvedItemStack, IgnoredStackAttributes))
+                || (validStack.CookedStack?.ResolvedItemStack is ItemStack cookedStack && inputStack.Equals(ingredient.world, cookedStack, IgnoredStackAttributes))
+            ;
+        }
     }
 
     [HarmonyPatch(typeof(CollectibleBehaviorHandbookTextAndExtraInfo), "addIngredientForInfo")]
@@ -1007,14 +1039,14 @@ namespace ACulinaryArtillery
         public static void Postfix(ref bool __result, ICoreClientAPI capi, ItemStack[] allStacks, ActionConsumable<string> openDetailPageFor, ItemStack stack, List<RichTextComponentBase> components, float marginTop, List<ItemStack> containers, List<ItemStack> fuels, List<ItemStack> molds, bool haveText)
         {
             int pieRecipeCount = 0;
-            List<RichTextComponentBase> excessivePieRecipeComponents = [];
+            HashSet<RichTextComponentBase> excessivePieRecipeComponents = [];
 
             // Toppings need to have the default crust type because they have only one shape.
             foreach (MealstackTextComponent? comp in components.OfType<MealstackTextComponent>())
             {
                 if (comp == null) continue;
 
-                ItemStack? mealBlock = Traverse.Create(comp).Field("dummySlot").GetValue<DummySlot>()?.Itemstack;
+                ItemStack? mealBlock = HandbookInfoExtensions.MealstackDummySlot(comp)?.Itemstack;
                 if (mealBlock?.Block is not BlockPie pieBlock) continue;
 
                 ItemStack? topCrustStack = pieBlock.GetContents(capi.World, mealBlock).ElementAtOrDefault(5);
@@ -1033,10 +1065,7 @@ namespace ACulinaryArtillery
             }
 
             // Rendering too many new meals in one frame overburdens MealMeshCache.
-            foreach (RichTextComponentBase comp in excessivePieRecipeComponents)
-            {
-                components.Remove(comp);
-            }
+            components.RemoveAll(excessivePieRecipeComponents.Contains);
 
             var newComponents = HandbookInfoExtensions.ACAHandbookIngredientForComponents(capi, allStacks, openDetailPageFor, stack);
             if (newComponents.Count == 0) return;
@@ -1076,10 +1105,11 @@ namespace ACulinaryArtillery
             ObjectCacheUtil.GetOrCreate(capi, "ACAhandbooksimmerStacks", () =>
             {
                 List<ItemStack> validStacks = [];
+                int maxFuelTemp = HandbookInfoExtensions.MaxFuelTemperature(fuels);
 
                 foreach (var val in allStacks)
                 {
-                    if (HandbookInfoExtensions.getCanSimmer(fuels, val) && !validStacks.Any(s => s.Equals(capi.World, val, GlobalConstants.IgnoredStackAttributes)))
+                    if (HandbookInfoExtensions.getCanSimmer(maxFuelTemp, val) && !validStacks.Any(s => s.Equals(capi.World, val, GlobalConstants.IgnoredStackAttributes)))
                     {
                         validStacks.Add(val);
                     }
@@ -1171,7 +1201,7 @@ namespace ACulinaryArtillery
             // Toppings need to have the default crust type because they have only one shape.
             foreach (MealstackTextComponent? comp in components.OfType<MealstackTextComponent>())
             {
-                ItemStack? mealBlock = Traverse.Create(comp).Field("dummySlot").GetValue<DummySlot>()?.Itemstack;
+                ItemStack? mealBlock = HandbookInfoExtensions.MealstackDummySlot(comp)?.Itemstack;
                 if (mealBlock?.Block is not BlockPie pieBlock) continue;
 
                 ItemStack? topCrustStack = pieBlock.GetContents(capi.World, mealBlock).ElementAtOrDefault(5);
@@ -1193,8 +1223,6 @@ namespace ACulinaryArtillery
             int insertIndex = __result.Count;
             if (firstPie != null) insertIndex = __result.IndexOf(firstPie);
 
-            var allstacks = ObjectCacheUtil.TryGet<ItemStack[]>(___capi, "handbookallstacks");
-
             foreach (var recipe in ___capi.GetMixingRecipes())
             {
                 if (___capi.IsShuttingDown) break;
@@ -1211,16 +1239,32 @@ namespace ACulinaryArtillery
                     insertIndex++;
                 }
             }
+        }
+    }
 
-            foreach (var recipe in ___capi.GetCookingRecipes())
+    [HarmonyPatch(typeof(ModSystemSurvivalHandbook), "CreateCachedMealRecipeStacks")]
+    public static class HandbookMealRecipeStacksPatch
+    {
+        public static bool Prefix(ICoreClientAPI ___capi, CookingRecipe recipe)
+        {
+            HandbookInfoExtensions.CreateCachedMealRecipeStacks(___capi, recipe);
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(GuiHandbookMealRecipePage), "getIngredientStacks")]
+    public static class GuiHandbookMealRecipePageIngredientStacksPatch
+    {
+        public static bool Prefix(ref List<ItemStack> __result, Dictionary<string, List<ItemStack>> ___cachedIngredientStacks, ICoreClientAPI capi, CookingRecipeIngredient ingredient)
+        {
+            if (!___cachedIngredientStacks.TryGetValue(ingredient.Code, out List<ItemStack>? cachedStacks))
             {
-                HandbookInfoExtensions.CreateCachedMealRecipeStacks(___capi, recipe);
+                if (HandbookInfoExtensions.IngredientStacks(capi, ingredient) is not List<ItemStack> ingredientStacks) return true;
+                ___cachedIngredientStacks.Add(ingredient.Code, cachedStacks = ingredientStacks);
             }
 
-            foreach (var recipe in BlockPie.GetHandbookRecipes(___capi, allstacks))
-            {
-                HandbookInfoExtensions.CreateCachedMealRecipeStacks(___capi, recipe);
-            }
+            __result = [.. cachedStacks.Select(stack => stack.Clone())];
+            return false;
         }
     }
 
@@ -1342,14 +1386,20 @@ namespace ACulinaryArtillery
         [HarmonyPatch("GetCookingRecipe")]
         public static void recipeFix(ref CookingRecipe? __result, ItemStack containerStack, IWorldAccessor world, BlockCookedContainerBase __instance)
         {
-            __result ??= world.Api.GetMixingRecipes().FirstOrDefault(rec => rec.Code == __instance.GetRecipeCode(world, containerStack));
+            if (__result != null) return;
+
+            string? recipeCode = __instance.GetRecipeCode(world, containerStack);
+            __result = world.Api.GetMixingRecipes().FirstOrDefault(rec => rec.Code == recipeCode);
         }
 
         [HarmonyPostfix]
         [HarmonyPatch("GetMealRecipe")]
         public static void mealFix(ref CookingRecipe? __result, ItemStack containerStack, IWorldAccessor world, BlockCookedContainerBase __instance)
         {
-            __result ??= world.Api.GetMixingRecipes().FirstOrDefault(rec => rec.Code == __instance.GetRecipeCode(world, containerStack));
+            if (__result != null) return;
+
+            string? recipeCode = __instance.GetRecipeCode(world, containerStack);
+            __result = world.Api.GetMixingRecipes().FirstOrDefault(rec => rec.Code == recipeCode);
         }
 
         // Fixes a vanilla bug.
@@ -1383,7 +1433,10 @@ namespace ACulinaryArtillery
         [HarmonyPatch("GetCookingRecipe")]
         public static void recipeFix(ref CookingRecipe? __result, ItemStack containerStack, IWorldAccessor world, BlockCookedContainerBase __instance)
         {
-            __result ??= world.Api.GetMixingRecipes().FirstOrDefault(rec => rec.Code == __instance.GetRecipeCode(world, containerStack));
+            if (__result != null) return;
+
+            string? recipeCode = __instance.GetRecipeCode(world, containerStack);
+            __result = world.Api.GetMixingRecipes().FirstOrDefault(rec => rec.Code == recipeCode);
         }
 
 

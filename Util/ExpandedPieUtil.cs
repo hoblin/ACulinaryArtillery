@@ -5,10 +5,11 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 
 using System;
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Vintagestory.API.Util;
 using Vintagestory.API;
 using Vintagestory.GameContent;
-using HarmonyLib;
 
 /// NOTE(Lazula)
 ///
@@ -173,8 +174,22 @@ namespace ACulinaryArtillery.Util
         public static ExpandedInPieProperties? ReadFrom(CollectibleObject obj, out string? errMessage)
         {
             errMessage = null;
+            if (obj == null) return null;
 
-            if (obj?.Attributes?["inPieProperties"]?.AsObject<ExpandedInPieProperties>(null, obj.Code.Domain) is not ExpandedInPieProperties props)
+            ParsedPieProperties parsed = parsedByCollectible.GetValue(obj, collectible => new(Parse(collectible, out string? error), error));
+            errMessage = parsed.Error;
+            return parsed.Properties;
+        }
+
+        private sealed record ParsedPieProperties(ExpandedInPieProperties? Properties, string? Error);
+
+        private static readonly ConditionalWeakTable<CollectibleObject, ParsedPieProperties> parsedByCollectible = new();
+
+        private static ExpandedInPieProperties? Parse(CollectibleObject obj, out string? errMessage)
+        {
+            errMessage = null;
+
+            if (obj.Attributes?["inPieProperties"]?.AsObject<ExpandedInPieProperties>(null, obj.Code.Domain) is not ExpandedInPieProperties props)
             {
                 return null;
             }
@@ -273,7 +288,7 @@ namespace ACulinaryArtillery.Util
 
     public class ExpandedPieUtil
     {
-        protected static HashSet<string> reportedMissingPieProps = [];
+        protected static ConcurrentDictionary<string, bool> reportedMissingPieProps = new();
 
         /// <summary>
         /// Report that an object in a pie is missing its InPieProperties.
@@ -284,12 +299,10 @@ namespace ACulinaryArtillery.Util
         /// <returns>true if the element is added to the HashSet object; false if the element is already present.</returns>
         public static bool ReportMissingPieProps(ILogger logger, string code)
         {
-            if (!reportedMissingPieProps.Contains(code))
-            {
-                logger.Error($"{code} is already in a pie, but it no longer has inPieProperties. It's still edible, but some things will break.");
-            }
+            if (!reportedMissingPieProps.TryAdd(code, true)) return false;
 
-            return reportedMissingPieProps.Add(code);
+            logger.Error($"{code} is already in a pie, but it no longer has inPieProperties. It's still edible, but some things will break.");
+            return true;
         }
 
         public static bool BEPieCanAddIngredient(BlockEntityPie bep, ItemStack stack)
@@ -299,7 +312,7 @@ namespace ACulinaryArtillery.Util
 
         public static bool BEPieCanAddIngredient(BlockEntityPie bep, ItemStack stack, out int? emptySlotIndex, out string? errCode, out string? errMessage)
         {
-            InventoryGeneric inv = Traverse.Create(bep).Field("inv").GetValue<InventoryGeneric>();
+            InventoryBase inv = bep.Inventory;
 
             errCode = null;
             errMessage = null;

@@ -89,6 +89,16 @@ namespace ACulinaryArtillery
         }
 
 
+        public override void OnUnloaded(ICoreAPI api)
+        {
+            base.OnUnloaded(api);
+
+            if (api.Side is not EnumAppSide.Client) return;
+
+            stopperStacks = null!;
+            sealantStacks = null!;
+        }
+
         public ItemStack? GetStopper(ItemStack containerStack)
         {
             if (containerStack.Collectible.LastCodePart() != "corked" && containerStack.Collectible.LastCodePart() != "waxed") return null;

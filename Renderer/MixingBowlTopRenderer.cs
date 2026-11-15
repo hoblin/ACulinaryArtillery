@@ -79,6 +79,7 @@ namespace ACulinaryArtillery
             api.Event.UnregisterRenderer(this, EnumRenderStage.Opaque);
 
             meshref?.Dispose();
+            meshrefWithPot?.Dispose();
         }
     }
 }

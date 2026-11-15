@@ -98,7 +98,7 @@ namespace ACulinaryArtillery
 
         public override bool OnTesselation(ITerrainMeshPool mesher, ITesselatorAPI tessThreadTesselator)
         {
-            GenMesh();
+            if (mesh == null) GenMesh();
             mesher.AddMeshData(mesh);
 
             if (tfMatrices == null)
@@ -247,10 +247,11 @@ namespace ACulinaryArtillery
         {
             base.FromTreeAttributes(tree, worldForResolving);
 
+            string? frame = Frame, interior = Interior;
             Frame = tree.GetString("frame");
             Interior = tree.GetString("interior");
 
-            GenMesh();
+            if (mesh == null || frame != Frame || interior != Interior) GenMesh();
 
             RedrawAfterReceivingTreeAttributes(worldForResolving);
         }

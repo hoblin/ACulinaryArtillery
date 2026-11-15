@@ -35,6 +35,15 @@ namespace ACulinaryArtillery
             base.OnLoaded(api);
 
             Props = Attributes?["liquidContainerProps"]?.AsObject(Props, Code.Domain) ?? Props;
+
+            if (api is not ICoreClientAPI capi) return;
+
+            liquidContainerStacks = ObjectCacheUtil.GetOrCreate<ItemStack[]>(api, "saucepanLiquidContainerStacks", () =>
+                [.. api.World.Collectibles.Where(obj => obj is BlockLiquidContainerTopOpened or ILiquidSource or ILiquidSink)?
+                                          .Select(obj => obj?.GetHandBookStacks(capi))?
+                                          .SelectMany(stacks => stacks ?? [])?
+                                          .Where(stack => stack != null) ?? []
+                ]);
         }
 
         public IInFirepitRenderer GetRendererWhenInFirepit(ItemStack stack, BlockEntityFirepit firepit, bool forOutputSlot)
@@ -48,14 +57,10 @@ namespace ACulinaryArtillery
             return EnumFirepitModel.Wide;
         }
 
+        private ItemStack[] liquidContainerStacks = [];
+
         public override WorldInteraction[] GetPlacedBlockInteractionHelp(IWorldAccessor world, BlockSelection selection, IPlayer forPlayer)
         {
-            ItemStack[] liquidContainerStacks = [.. api.World.Collectibles.Where(obj => obj is BlockLiquidContainerTopOpened or ILiquidSource or ILiquidSink)?
-                                                                          .Select(obj => obj?.GetHandBookStacks((ICoreClientAPI)api))?
-                                                                          .SelectMany(stacks => stacks ?? [])?
-                                                                          .Where(stack => stack != null) ?? []
-                                                ];
-
             return [ new () {
                 ActionLangCode = "game:blockhelp-behavior-rightclickpickup",
                 MouseButton = EnumMouseButton.Right,
