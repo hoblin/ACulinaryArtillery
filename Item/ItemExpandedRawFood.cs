@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -240,12 +241,21 @@ namespace ACulinaryArtillery
             if (foodCat >= 1 && foodCat <= 5) satHolder[foodCat] += ingProps.Satiety * mult;
         }
 
+        private static readonly ConcurrentDictionary<(string Locale, string Ingredient), string?> ingredientNames = new();
+
+        private static string? IngredientName(string ingredient)
+        {
+            return ingredientNames.GetOrAdd((Lang.CurrentLocale, ingredient), key =>
+            {
+                string path = new AssetLocation(key.Ingredient).Path;
+                return Lang.GetIfExists("recipeingredient-block-" + path) ?? Lang.GetIfExists("recipeingredient-item-" + path);
+            });
+        }
+
         public override void GetHeldItemInfo(ItemSlot inSlot, StringBuilder dsc, IWorldAccessor world, bool withDebugInfo)
         {
             string[] ings = [.. (inSlot.Itemstack.Attributes["madeWith"] as StringArrayAttribute)?.value
-                                .Select(ing => new AssetLocation(ing))?
-                                .Select(ing => Lang.GetIfExists("recipeingredient-block-" + ing.Path) ??
-                                               Lang.GetIfExists("recipeingredient-item-" + ing.Path))?
+                                .Select(IngredientName)
                                 .Where(ing => ing != null)
                                 .Distinct() ?? []];
 
